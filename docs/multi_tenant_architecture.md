@@ -4,7 +4,48 @@ This document outlines the architecture, database models, user flows, and API su
 
 ---
 
-## 1. Conceptual Data Model
+## 1. System Roles Hierarchy: Platform vs. Tenant Level
+
+To support enterprise administration, billing control, and provisioning, the system divides users into two distinct scopes: **Platform-Level (Superadmins)** and **Tenant-Level (Owners/Members)**.
+
+```
+                  ┌─────────────────────────────────────────┐
+                  │          Platform Superadmin            │
+                  │  (Manage Tenants, Billing & Features)   │
+                  └───────────────────┬─────────────────────┘
+                                      │
+                                      ▼
+                  ┌─────────────────────────────────────────┐
+                  │              Tenant Owner               │
+                  │  (Manage Organization Team & Settings)  │
+                  └───────────────────┬─────────────────────┘
+                                      │
+                                      ▼
+                  ┌─────────────────────────────────────────┐
+                  │             Tenant Member               │
+                  │       (Access Scoped Feature Data)      │
+                  └─────────────────────────────────────────┘
+```
+
+### 1. Platform-Level Scope (Superadmin)
+*   **Role**: `user_profiles.is_superadmin = true`.
+*   **Permissions**: 
+    *   Bypass Row-Level Security (RLS) policies to view all tenants, members, and data logs.
+    *   Manually provision/create new tenants.
+    *   Assign the initial **Tenant Owner** to a tenant.
+    *   Toggle **Feature Slugs** (active modules) and subscription plans for any tenant.
+    *   Create nested/child tenants (linking `parent_id` hierarchies).
+    *   Access the central administration dashboard (`/admin`).
+
+### 2. Tenant-Level Scope (Owner, Admin, Member)
+*   **Role**: Set on the `tenant_members` mapping table.
+*   **Permissions**:
+    *   **Tenant Owner**: Full control *only* within their organization scope. Can invite users, configure internal visual settings, switch subscription plans (within limits allowed by the superadmin), and manage team roles.
+    *   **Tenant Admin/Member**: Access features, edit project/module data, and view settings as permitted by their custom assigned `tenant_roles` permissions.
+
+---
+
+## 2. Conceptual Data Model
 
 The database uses a single-database design. Tenant separation is achieved through Row-Level Security (RLS) policies on tenant-specific tables using a `tenant_id` column.
 
@@ -30,7 +71,7 @@ erDiagram
 *   `id` (UUID, Primary Key): Unique tenant identifier.
 *   `name` (Text): Display name of the tenant organization.
 *   `slug` (Text, Unique): URL-friendly routing slug (e.g., `acme-corp`).
-*   `parent_id` (UUID, Nullable, Foreign Key -> `tenants.id`): For optional future hierarchy.
+*   `parent_id` (UUID, Nullable, Foreign Key -> `tenants.id`): Points to parent tenant to construct hierarchies (e.g., corporate headquarters and local branches).
 *   `status` (Text): Administrative state (`active`, `suspended`, `pending_onboarding`).
 *   `created_at` / `updated_at` (Timestamp)
 
@@ -38,7 +79,7 @@ erDiagram
 *   `tenant_id` (UUID, Primary Key, Foreign Key -> `tenants.id`): 1:1 mapping.
 *   `logo_url` (Text, Nullable): URL to company branding logo.
 *   `theme_color` (Text, Nullable): UI theme settings.
-*   `enabled_features` (JSONB): Dynamic feature flags mapped by code-defined slugs.
+*   `enabled_features` (JSONB): Dynamic feature flags mapped by code-defined slugs. Editable *only* by Platform Superadmins.
     ```json
     {
       "crm": true,
@@ -46,7 +87,7 @@ erDiagram
       "chat": true
     }
     ```
-*   `preferences` (JSONB): Tenant-wide business settings.
+*   `preferences` (JSONB): Tenant-wide business settings. Editable by Tenant Owners.
     ```json
     {
       "localization": {
@@ -64,7 +105,7 @@ erDiagram
 #### 3. `tenant_roles`
 *   `id` (UUID, Primary Key): Unique role identifier.
 *   `tenant_id` (UUID, Nullable, Foreign Key -> `tenants.id`): NULL for system-wide defaults (Owner, Admin, Member); populated for custom tenant roles.
-*   `name` (Text): Display name of the role (e.g., `Invoicing Agent`).
+*   `name` (Text): Display name of the role.
 *   `description` (Text): Summary of role permissions.
 *   `permissions` (JSONB): Map of features to permitted actions.
     ```json
@@ -74,12 +115,13 @@ erDiagram
       }
     }
     ```
-*   `is_system_role` (Boolean): Protected status flag.
+*   `is_system_role` (Boolean): Protected status flag (e.g., `Owner` role is immutable).
 
 #### 4. `user_profiles`
 *   `id` (UUID, Primary Key, Foreign Key -> `auth.users`): Corresponds to Supabase authentication identity.
 *   `full_name` (Text): Display name.
 *   `avatar_url` (Text, Nullable)
+*   `is_superadmin` (Boolean, Default `false`): System-wide flag granting access to administrative endpoints and bypassing tenant RLS scopes.
 *   `preferences` (JSONB): User-specific app settings.
     ```json
     {
@@ -122,74 +164,44 @@ erDiagram
 
 ---
 
-## 2. Core User Flows
+## 3. Core User Flows
 
-### Flow A: Authentication & Access
+### Flow A: Superadmin Provisioning a Tenant & Assigning Tenant Owner
 ```
-[User Login] ──► [Select Authentication Method]
-                       ├── Email & Password
-                       ├── OAuth (Google, GitHub)
-                       └── Phone OTP
-                                │
-                                ▼
-                       [Validate Profile]
-                                │
-                                ▼
-                   [Retrieve Tenant Memberships]
-                                │
-                                ▼
-                 [Switch to Last Active Tenant]
+[Superadmin] ──► [Admin Portal] ──► [Fill Org Info, Feature Set, Select Owner]
+                                                 │
+                                                 ▼
+                                     [Create Tenant Database Record]
+                                                 │
+                                                 ▼
+                                     [Assign User as Tenant Owner]
 ```
-
-1.  **Login**: User logs in using Email/Password, OAuth, or Phone OTP.
-2.  **Verify Profile**: System retrieves the user's `user_profiles` row to load user preferences.
-3.  **Resolve Tenants**: System queries `tenant_members` to resolve all tenants this user belongs to.
-4.  **Auto-Select**: System automatically routes user to their default or last-active tenant workspace.
+1.  **Superadmin Input**: Superadmin logs into `/admin` and inputs the new company name, URL slug, enabled modules, subscription tier, and the email of the target **Tenant Owner**.
+2.  **Verify/Create Owner Profile**: The system checks if a user profile exists for that email. If not, it creates a profile placeholder.
+3.  **DB Provision Transaction**:
+    *   Inserts row into `tenants`.
+    *   Inserts settings row in `tenant_settings` enabling selected feature slugs.
+    *   Binds user to the tenant in `tenant_members` using the system default `Owner` role.
+4.  **Welcome Delivery**: The Tenant Owner receives an email notification with login/activation instructions.
 
 ---
 
-### Flow B: Onboarding & Tenant Creation
-```
-[Authorized User] ──► [Onboarding Form] ──► [Create Tenant & Base Settings]
-                                                    │
-                                                    ▼
-                                            [Assign Owner Role]
-                                                    │
-                                                    ▼
-                                          [Generate Workspace]
-```
-
-1.  **Register/Login**: User completes authenticated sign-up.
-2.  **Organization Details**: User fills out organization name and customized slug.
-3.  **DB Actions**:
-    *   Creates a new row in `tenants`.
-    *   Creates a corresponding record in `tenant_settings` with default preferences and features.
-    *   Creates a system default `Owner` role mapping in `tenant_members` for the creator.
-    *   Creates a billing mapping profile in `tenant_billing`.
-4.  **Route Workspace**: Frontend routes the user into the active dashboard of the newly created tenant.
+### Flow B: Self-Service Tenant Creation (Optional SaaS Flow)
+*If your system allows users to sign up and pay directly without human admin intervention:*
+1.  **Select Tier**: Guest user registers on the website and completes payment setup.
+2.  **Trigger Automation RPC**: On successful verification, the backend triggers an automated RPC mimicking the Superadmin provisioning workflow:
+    *   Creates tenant.
+    *   Enables standard features matching the tier.
+    *   Assigns the registering user as the `Owner` of that tenant.
 
 ---
 
-### Flow C: Inviting Members
-```
-[Tenant Admin] ──► [Invite Form] ──► [Create Invitation Token]
-                                                 │
-                                                 ▼
-                                     [Send Email to Recipient]
-                                                 │
-                                                 ▼
-                                      [User Clicks Email Link]
-                                                 │
-                                                 ▼
-                                      [Join Organization]
-```
-
-1.  **Trigger Invite**: Tenant Admin enters invitee email and assigns a Role.
-2.  **Generate Token**: System creates a pending row in `tenant_invitations` with a secure token.
+### Flow C: Inviting Members (Within a Tenant)
+1.  **Trigger Invite**: Tenant Owner/Admin enters invitee email and assigns a Role.
+2.  **Generate Token**: System creates a pending row in `tenant_invitations`.
 3.  **Deliver**: Email service sends a verification link containing the token to the recipient.
 4.  **Acceptance**:
-    *   If user does not have an account: Recipient signs up, then invitation is processed.
-    *   If user has an account: Recipient logs in.
+    *   Recipient logs in or signs up.
     *   Invitation status updates to `accepted`.
     *   New row is added to `tenant_members` mapping the user to the tenant with the selected role.
 
@@ -206,29 +218,71 @@ erDiagram
 
 ---
 
-## 3. Conceptual API Surface
+## 4. UI Routing & Layout Architecture
 
-These represent the core API functions exposed by the boilerplate’s services (e.g., Supabase database queries and client calls).
+To separate Superadmin controls from Tenant workspaces within a single codebase, the application utilizes Quasar's layout systems and Vue Router route guards.
 
-### 1. Authentication Services
+```
+src/
+├── layouts/
+│   ├── AuthLayout.vue         # Layout for login, sign-up, password reset pages
+│   ├── WorkspaceLayout.vue    # Layout for tenant dashboards (sidebar, tenant switcher)
+│   └── AdminLayout.vue        # Layout for platform administrators (global controls)
+├── pages/
+│   ├── auth/                  # Page components for login and sign-up
+│   ├── workspace/             # Page components for workspace apps (CRM, Invoices, etc.)
+│   └── admin/                 # Page components for the system dashboard
+└── router/
+    ├── guards.ts              # Contains logic to verify authentication and roles
+    └── routes.ts              # Route configurations mapping paths to layouts
+```
+
+### Route Configurations
+1.  **Auth Route Group (`/auth/*`)**
+    *   **Layout**: `AuthLayout.vue`
+    *   **Access**: Anonymous Users
+    *   **Paths**: `/auth/login`, `/auth/signup`, `/auth/verify`
+2.  **Superadmin Route Group (`/admin/*`)**
+    *   **Layout**: `AdminLayout.vue`
+    *   **Access**: Logged in users where `user_profiles.is_superadmin === true`
+    *   **Paths**: `/admin/dashboard`, `/admin/tenants`, `/admin/billing`
+3.  **Tenant Workspace Route Group (`/:tenantSlug/*`)**
+    *   **Layout**: `WorkspaceLayout.vue`
+    *   **Access**: Logged in users verified as a member of the requested `:tenantSlug`
+    *   **Paths**: `/:tenantSlug/dashboard`, `/:tenantSlug/projects`, `/:tenantSlug/settings`
+
+### Security Guard Workflow
+*   **Superadmin Guard**: When accessing `/admin/*`, middleware retrieves the current user profile. If `is_superadmin` is `false`, it redirects the user to their default workspace or a 403 error page.
+*   **Workspace Guard**: When accessing `/:tenantSlug/*`, middleware queries the active memberships of the user. If the user is not a member of the tenant matching the URL slug, access is denied.
+
+---
+
+## 5. Conceptual API Surface
+
+### 1. Superadmin Platform Management API
+*   **`adminCreateTenant(name, slug, parentId)`**: Registers a tenant, parent binding, and maps default configurations.
+*   **`adminAssignTenantOwner(tenantId, userId)`**: Binds a user to the tenant with an immutable Owner role.
+*   **`adminToggleTenantFeatures(tenantId, featureSlugsJSON)`**: Manually updates a tenant's feature toggles (`enabled_features` column) directly from the platform controller.
+*   **`adminUpdateBilling(tenantId, tier, billingStatus)`**: Directly overrides a tenant's pricing level.
+
+### 2. Authentication Services
 *   **`signUpWithEmail(email, password)`**: Registers a new user.
 *   **`signInWithEmail(email, password)`**: Logs in with email/password.
 *   **`signInWithOAuth(provider)`**: Triggers OAuth redirect flow.
 *   **`sendPhoneOtp(phone)`**: Sends validation SMS.
 *   **`verifyPhoneOtp(phone, token)`**: Verifies SMS passcode to authenticate user.
 
-### 2. Tenant Management Services
-*   **`createTenant(name, slug)`**: Initializes a tenant, configuration profile, settings, and billing placeholder.
+### 3. Tenant-Level Management Services
 *   **`getUserTenants(userId)`**: Retrieves a list of all tenants the authenticated user belongs to.
 *   **`getTenantSettings(tenantId)`**: Fetches theme customization, localization details, and enabled feature flags.
 *   **`updateTenantSettings(tenantId, settings)`**: Updates settings and preferences JSON object.
 
-### 3. Roles & Permissions Services
+### 4. Roles & Permissions Services
 *   **`getTenantRoles(tenantId)`**: Retrieves custom roles and system roles defined for the tenant.
 *   **`createTenantRole(tenantId, roleName, permissions)`**: Configures a new custom role with custom module permission mappings.
 *   **`assignMemberRole(memberId, roleId)`**: Updates a user's role mapping inside the tenant.
 
-### 4. Membership & Invitation Services
+### 5. Membership & Invitation Services
 *   **`inviteUser(tenantId, email, roleId)`**: Inserts a pending invitation record and triggers delivery.
 *   **`acceptInvitation(token)`**: Validates token and creates a `tenant_members` record.
 *   **`getTenantMembers(tenantId)`**: Lists members active within the selected tenant.

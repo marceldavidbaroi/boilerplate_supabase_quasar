@@ -75,3 +75,69 @@ All commands are run from the root workspace:
 | `pnpm run backend:init` | `npx supabase init` | Re-initializes supabase setup |
 | `pnpm run backend:push` | `npx supabase db push --linked` | Pushes local migrations to Supabase database |
 | `pnpm run backend:types` | `npx supabase gen types ...` | Re-generates TypeScript database bindings |
+
+---
+
+## Starting a New Project (Cloning / Forking)
+
+This repository is designed to be a reusable **base boilerplate template**. If you want to build a new application using this setup, you should create a new independent repository by cloning/forking this base.
+
+### Step-by-Step setup:
+
+1. **Clone this base template** to a new local folder:
+   ```bash
+   git clone <boilerplate-git-url> my-new-application
+   cd my-new-application
+   ```
+
+2. **Re-link the remote repository**:
+   Rename the current origin to `upstream` (so you can still pull core boilerplate updates later) and add your new project's git repository as `origin`:
+   ```bash
+   git remote rename origin upstream
+   git remote add origin <your-new-project-git-url>
+   ```
+
+3. **Publish to your new repository**:
+   ```bash
+   git push -u origin main
+   ```
+
+4. **Environment Variables**:
+   Create a `web/.env` file from the example:
+   ```bash
+   cp web/.env.example web/.env
+   ```
+   Update the `VVITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY` with your new Supabase project's keys from your Supabase dashboard.
+
+5. **Pulling Upstream Updates**:
+   If the base template gets updated with improvements, bugfixes, or features, you can merge them into your project at any time:
+   ```bash
+   git fetch upstream
+   git merge upstream/main
+   ```
+
+---
+
+## How to Add New Features (Best Practices)
+
+When extending your new cloned application with custom functionality (like tenant-specific portals, dashboards, or tables):
+
+### 1. Database Schema Extensions (Backend)
+- Add migrations inside the `supabase/migrations/` directory.
+- Use Supabase CLI to generate updated TypeScript bindings after changing your database schema:
+  ```bash
+  pnpm run backend:types
+  ```
+
+### 2. Frontend Features
+- **Global Services**: Place core APIs or database services inside `web/src/services/`.
+- **Views & Routes**: Add pages in `web/src/pages/` (such as `web/src/pages/workspace/` for tenant-specific dashboards) and register them in `web/src/router/routes.ts`.
+- **Tenant Context**: Access the current tenant's active ID, permissions, settings, and billing information in any Vue component via the Pinia store:
+  ```typescript
+  import { useTenantStore } from 'src/stores/tenant';
+  const tenantStore = useTenantStore();
+  
+  console.log(tenantStore.activeTenant?.id);
+  console.log(tenantStore.hasPermission('settings', 'write'));
+  ```
+

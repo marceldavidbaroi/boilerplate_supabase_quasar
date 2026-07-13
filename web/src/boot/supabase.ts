@@ -1,9 +1,9 @@
 import { defineBoot } from '#q-app';
 import { createClient } from '@supabase/supabase-js';
 
-// Retrieve keys from defineEnv or fallback to import.meta.env
-const supabaseUrl = process.env.SUPABASE_URL || import.meta.env.VITE_SUPABASE_URL || '';
-const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+// Retrieve keys from import.meta.env (configured via defineEnv in quasar.config.ts)
+const supabaseUrl = import.meta.env.SUPABASE_URL || '';
+const supabaseAnonKey = import.meta.env.SUPABASE_ANON_KEY || '';
 
 const defaultFetch: typeof fetch = globalThis.fetch.bind(globalThis);
 

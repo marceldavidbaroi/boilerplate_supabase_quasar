@@ -2,6 +2,10 @@
 // https://v2.quasar.dev/quasar-cli-vite/quasar-config-file
 
 import { defineConfig } from '#q-app';
+import dotenv from 'dotenv';
+import path from 'path';
+
+dotenv.config({ path: path.resolve(__dirname, '.env') });
 
 export default defineConfig((/* ctx */) => {
   return {
@@ -51,10 +55,9 @@ export default defineConfig((/* ctx */) => {
       // vueDevtools,
 
       // publicPath: '/',
-      // define: {},
       defineEnv: {
-        SUPABASE_URL: process.env.VITE_SUPABASE_URL,
-        SUPABASE_ANON_KEY: process.env.VITE_SUPABASE_ANON_KEY,
+        SUPABASE_URL: process.env.VVITE_SUPABASE_URL,
+        SUPABASE_ANON_KEY: process.env.VITE_SUPABASE_PUBLISHABLE_KEY,
       },
       // ignorePublicFolder: true,
       // minify: false,
@@ -81,7 +84,7 @@ export default defineConfig((/* ctx */) => {
     // https://v2.quasar.dev/quasar-cli-vite/quasar-config-file#devserver
     devServer: {
       // https: true,
-      open: true, // opens browser window automatically
+      open: false, // opens browser window automatically
     },
 
     // https://v2.quasar.dev/quasar-cli-vite/quasar-config-file#framework
@@ -99,7 +102,7 @@ export default defineConfig((/* ctx */) => {
       // directives: [],
 
       // Quasar plugins
-      plugins: [],
+      plugins: ['Notify'],
     },
 
     // animations: 'all', // --- includes all animations
